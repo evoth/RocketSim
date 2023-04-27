@@ -24,6 +24,7 @@ subject to the following restrictions:
 btHashedOverlappingPairCache::btHashedOverlappingPairCache() : m_overlapFilterCallback(0),
 															   m_ghostPairCallback(0)
 {
+	printf("%s %p\n", __func__, this);
 	int initialAllocatedSize = 2;
 	m_overlappingPairArray.reserve(initialAllocatedSize);
 	growTables();
@@ -31,6 +32,7 @@ btHashedOverlappingPairCache::btHashedOverlappingPairCache() : m_overlapFilterCa
 
 btHashedOverlappingPairCache::~btHashedOverlappingPairCache()
 {
+	printf("%s %p\n", __func__, this);
 }
 
 void btHashedOverlappingPairCache::cleanOverlappingPair(btBroadphasePair& pair, btCollisionDispatcher* dispatcher)

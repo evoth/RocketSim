@@ -91,7 +91,7 @@ btHashedOverlappingPairCache : public btOverlappingPairCache
 	btBroadphasePairArray m_overlappingPairArray;
 	btOverlapFilterCallback* m_overlapFilterCallback;
 
-protected:
+public:
 	btAlignedObjectArray<int> m_hashTable;
 	btAlignedObjectArray<int> m_next;
 	btOverlappingPairCallback* m_ghostPairCallback;
