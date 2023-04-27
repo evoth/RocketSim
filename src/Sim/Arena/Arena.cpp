@@ -768,7 +768,7 @@ Arena::~Arena() {
 		delete[] _worldCollisionBvhShapes;
 	}
 
-
+	_bulletWorldParams.overlappingPairCache->~btHashedOverlappingPairCache();
 	btAlignedFree(_bulletWorldParams.overlappingPairCache);
 }
 
