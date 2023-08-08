@@ -21,6 +21,10 @@ CarState Car::GetState() {
 
 	_internalState.angVel = _rigidBody->getAngularVelocity();
 
+    // Can only be retrieved (not updated in SetState())
+    for (int i = 0; i < 4; i++)
+        _internalState.wheelTransforms[i] = _bulletVehicle->getWheelTransformWS(i);
+
 	return _internalState;
 }
 

@@ -41,16 +41,22 @@ GameState Game::GetState()
 
     BallState ballState = arena->ball->GetState();
     state.ballPos = ballState.pos;
+    state.ballAng = Angle::FromRotMat(ballState.rotMat);
     state.ballVel = ballState.vel;
     state.ballAngVel = ballState.angVel;
 
     CarState carState = car->GetState();
     state.carPos = carState.pos;
-    state.carRotMat = carState.rotMat;
     state.carAng = Angle::FromRotMat(carState.rotMat);
-    state.carForward = state.carAng.GetForwardVector();
     state.carVel = carState.vel;
     state.carAngVel = carState.angVel;
+
+    for (int i = 0; i < 4; i++)
+    {
+        btTransform wheelTransform = carState.wheelTransforms[i];
+        state.wheelPos[i] = wheelTransform.getOrigin() * BT_TO_UU;
+        state.wheelAng[i] = Angle::FromRotMat(wheelTransform.getBasis());
+    }
 
     return state;
 }
@@ -95,14 +101,15 @@ EMSCRIPTEN_BINDINGS(rocketsim)
 
     value_object<GameState>("GameState")
         .field("ballPos", &GameState::ballPos)
+        .field("ballAng", &GameState::ballAng)
         .field("ballVel", &GameState::ballVel)
         .field("ballAngVel", &GameState::ballAngVel)
         .field("carPos", &GameState::carPos)
-        .field("carRotMat", &GameState::carRotMat)
         .field("carAng", &GameState::carAng)
-        .field("carForward", &GameState::carForward)
         .field("carVel", &GameState::carVel)
-        .field("carAngVel", &GameState::carAngVel);
+        .field("carAngVel", &GameState::carAngVel)
+        .field("wheelPos", &GameState::wheelPos)
+        .field("wheelAng", &GameState::wheelAng);
 
     value_object<CarControls>("CarControls")
         .field("throttle", &CarControls::throttle)
@@ -128,6 +135,18 @@ EMSCRIPTEN_BINDINGS(rocketsim)
         .element(&Angle::roll)
         .element(&Angle::yaw)
         .element(&Angle::pitch);
+
+    value_array<std::array<Vec, 4>>("VecArray4")
+        .element(emscripten::index<0>())
+        .element(emscripten::index<1>())
+        .element(emscripten::index<2>())
+        .element(emscripten::index<3>());
+
+    value_array<std::array<Angle, 4>>("AngleArray4")
+        .element(emscripten::index<0>())
+        .element(emscripten::index<1>())
+        .element(emscripten::index<2>())
+        .element(emscripten::index<3>());
 
     value_object<CarConfig>("CarConfig")
         .field("hitboxSize", &CarConfig::hitboxSize)
