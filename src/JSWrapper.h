@@ -3,17 +3,15 @@
 struct GameState
 {
     Vec carPos;
+    RotMat carRotMat;
     Angle carAng;
+    Vec carForward;
     Vec carVel;
     Vec carAngVel;
 
     Vec ballPos;
-    Angle ballAng;
     Vec ballVel;
     Vec ballAngVel;
-
-    Vec wheelPos[4];
-    Angle wheelAng[4];
 };
 
 enum class CarConfigPreset : byte
