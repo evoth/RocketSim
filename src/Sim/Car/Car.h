@@ -76,8 +76,8 @@ struct CarState {
 	// Controls from last tick, set to this->controls after simulation
 	CarControls lastControls = CarControls();
 
-    // Wheel transforms
-    btTransform wheelTransforms[4];
+	// Wheel transforms
+	btTransform wheelTransforms[4];
 
 	void Serialize(DataStreamOut& out);
 	void Deserialize(DataStreamIn& in);

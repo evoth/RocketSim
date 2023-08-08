@@ -14,8 +14,8 @@ struct BallState {
 	// Position in world space
 	Vec pos = { 0, 0, RLConst::BALL_REST_Z };
 
-    // Rotation matrix
-    RotMat rotMat = RotMat::GetIdentity();
+	// Rotation matrix
+	RotMat rotMat = RotMat::GetIdentity();
 
 	// Linear velocity
 	Vec vel = { 0, 0, 0 };
