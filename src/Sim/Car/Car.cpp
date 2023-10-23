@@ -42,13 +42,13 @@ void Car::Demolish(float respawnDelay) {
 	_internalState.demoRespawnTimer = respawnDelay;
 }
 
-void Car::Respawn(int seed, float boostAmount) {
+void Car::Respawn(GameMode gameMode, int seed, float boostAmount) {
 	using namespace RLConst;
 
 	CarState newState = CarState();
 
 	int spawnPosIndex = Math::RandInt(0, CAR_RESPAWN_LOCATION_AMOUNT, seed);
-	CarSpawnPos spawnPos = CAR_RESPAWN_LOCATIONS[spawnPosIndex];
+	CarSpawnPos spawnPos = ((gameMode == GameMode::HOOPS) ? CAR_RESPAWN_LOCATIONS_HOOPS : CAR_RESPAWN_LOCATIONS_SOCCAR)[spawnPosIndex];
 
 	newState.pos = Vec(spawnPos.x, spawnPos.y * (team == Team::BLUE ? 1 : -1), CAR_RESPAWN_Z);
 	newState.rotMat = Angle(spawnPos.yawAng + (team == Team::BLUE ? 0 : M_PI), 0.f, 0.f).ToRotMat();
@@ -57,7 +57,7 @@ void Car::Respawn(int seed, float boostAmount) {
 	this->SetState(newState);
 }
 
-void Car::_PreTickUpdate(float tickTime, const MutatorConfig& mutatorConfig, SuspensionCollisionGrid* grid) {
+void Car::_PreTickUpdate(GameMode gameMode, float tickTime, const MutatorConfig& mutatorConfig, SuspensionCollisionGrid* grid) {
 	using namespace RLConst;
 
 #ifndef RS_MAX_SPEED
@@ -71,7 +71,7 @@ void Car::_PreTickUpdate(float tickTime, const MutatorConfig& mutatorConfig, Sus
 		if (_internalState.isDemoed) {
 			_internalState.demoRespawnTimer = RS_MAX(_internalState.demoRespawnTimer - tickTime, 0);
 			if (_internalState.demoRespawnTimer == 0)
-				Respawn(-1, mutatorConfig.carSpawnBoostAmount);
+				Respawn(gameMode, -1, mutatorConfig.carSpawnBoostAmount);
 		}
 
 		if (_internalState.isDemoed) {
@@ -108,7 +108,7 @@ void Car::_PreTickUpdate(float tickTime, const MutatorConfig& mutatorConfig, Sus
 
 	if (numWheelsInContact == 0) {
 		_UpdateAirControl(tickTime, mutatorConfig);
-	} else {
+	} else if (numWheelsInContact >= 3) {
 		_internalState.isFlipping = false;
 	}
 
@@ -128,7 +128,7 @@ void Car::_PreTickUpdate(float tickTime, const MutatorConfig& mutatorConfig, Sus
 	_UpdateBoost(tickTime, mutatorConfig, forwardSpeed_UU);
 }
 
-void Car::_PostTickUpdate(float tickTime, const MutatorConfig& mutatorConfig) {
+void Car::_PostTickUpdate(GameMode gameMode, float tickTime, const MutatorConfig& mutatorConfig) {
 
 	if (_internalState.isDemoed)
 		return;
@@ -207,7 +207,7 @@ void Car::_FinishPhysicsTick(const MutatorConfig& mutatorConfig) {
 	}
 }
 
-void Car::_BulletSetup(btDynamicsWorld* bulletWorld, const MutatorConfig& mutatorConfig) {
+void Car::_BulletSetup(GameMode gameMode, btDynamicsWorld* bulletWorld, const MutatorConfig& mutatorConfig) {
 	// Set up rigidbody and collision shapes
 	_childHitboxShape = btBoxShape((config.hitboxSize * UU_TO_BT) / 2);
 	_compoundShape = btCompoundShape(false, 1);
@@ -238,6 +238,9 @@ void Car::_BulletSetup(btDynamicsWorld* bulletWorld, const MutatorConfig& mutato
 
 	// Disable gyroscopic force
 	_rigidBody.m_rigidbodyFlags = 0;
+
+	if (gameMode == GameMode::HOOPS)
+		_rigidBody.m_doubleIgnoreCollide = true;
 
 	// Add rigidbody to world
 	bulletWorld->addRigidBody(&_rigidBody);
@@ -297,11 +300,7 @@ void Car::_BulletSetup(btDynamicsWorld* bulletWorld, const MutatorConfig& mutato
 	_internalState.boost = mutatorConfig.carSpawnBoostAmount;
 }
 
-void CarState::Serialize(DataStreamOut& out) {
-
-	uint32_t argumentCount = RS_GET_ARGUMENT_COUNT(CARSTATE_SERIALIZATION_FIELDS);
-	out.Write(argumentCount);
-
+void CarState::Serialize(DataStreamOut& out) const {
 	ballHitInfo.Serialize(out);
 
 	out.WriteMultiple(
@@ -311,17 +310,6 @@ void CarState::Serialize(DataStreamOut& out) {
 
 void CarState::Deserialize(DataStreamIn& in) {
 
-	uint32_t trueArgumentCount = RS_GET_ARGUMENT_COUNT(CARSTATE_SERIALIZATION_FIELDS);
-	uint32_t argumentCount = in.Read<uint32_t>();
-
-	if (argumentCount != trueArgumentCount) {
-		RS_ERR_CLOSE(
-			"CarState::Deserialize(): Failed to deserialize, number of arguments does not match " <<
-			"(" << argumentCount << "/" << trueArgumentCount << "). " <<
-			"File is either corrupt or from a different version of RocketSim."
-		);
-	}
-
 	ballHitInfo.Deserialize(in);
 
 	in.ReadMultiple(
@@ -329,14 +317,18 @@ void CarState::Deserialize(DataStreamIn& in) {
 	);
 }
 
-void Car::_Serialize(DataStreamOut& out) {
+void Car::Serialize(DataStreamOut& out) {
 	out.WriteMultiple(CAR_CONTROLS_SERIALIZATION_FIELDS(controls));
 	out.WriteMultiple(CAR_CONFIG_SERIALIZATION_FIELDS(config));
+	GetState().Serialize(out);
 }
 
 void Car::_Deserialize(DataStreamIn& in) {
 	in.ReadMultiple(CAR_CONTROLS_SERIALIZATION_FIELDS(controls));
 	in.ReadMultiple(CAR_CONFIG_SERIALIZATION_FIELDS(config));
+	CarState newState;
+	newState.Deserialize(in);
+	_internalState = newState;
 }
 
 void Car::_UpdateWheels(float tickTime, const MutatorConfig& mutatorConfig, int numWheelsInContact, float forwardSpeed_UU) {
@@ -512,7 +504,7 @@ void Car::_UpdateBoost(float tickTime, const MutatorConfig& mutatorConfig, float
 		if (_internalState.isOnGround && forwardSpeed_UU > BOOST_ACCEL_GROUND_DECAY_MIN_VEL)
 			forceScale = (1 - BOOST_ACCEL_GROUND_DECAY_AMOUNT);
 
-		_rigidBody.m_linearVelocity += GetForwardDir() * mutatorConfig.boostAccel * forceScale * tickTime;
+		_rigidBody.applyCentralForce(GetForwardDir() * mutatorConfig.boostAccel * forceScale * CAR_MASS_BT);
 	}
 }
 
@@ -540,8 +532,8 @@ void Car::_UpdateJump(float tickTime, const MutatorConfig& mutatorConfig, bool j
 		// Start jumping
 		_internalState.isJumping = true;
 		_internalState.jumpTime = 0;
-		btVector3 jumpStartForce = GetUpDir() * mutatorConfig.jumpImmediateForce * UU_TO_BT;
-		_rigidBody.m_linearVelocity += jumpStartForce;
+		btVector3 jumpStartForce = GetUpDir() * mutatorConfig.jumpImmediateForce * UU_TO_BT * CAR_MASS_BT;
+		_rigidBody.applyCentralImpulse(jumpStartForce);
 	}
 
 	if (_internalState.isJumping) {
@@ -556,7 +548,7 @@ void Car::_UpdateJump(float tickTime, const MutatorConfig& mutatorConfig, bool j
 			totalJumpForce *= JUMP_PRE_MIN_ACCEL_SCALE;
 		}
 
-		_rigidBody.m_linearVelocity += totalJumpForce * UU_TO_BT * tickTime;
+		_rigidBody.applyCentralForce(totalJumpForce * UU_TO_BT * CAR_MASS_BT);
 		_internalState.jumpTime += tickTime;
 	}
 }
@@ -607,8 +599,13 @@ void Car::_UpdateAirControl(float tickTime, const MutatorConfig& mutatorConfig) 
 		float pitchTorqueScale = 1;
 		if (controls.pitch || controls.yaw || controls.roll) {
 
-			if (_internalState.hasFlipped && _internalState.flipTime < FLIP_PITCHLOCK_TIME)
+			if (_internalState.isFlipping) {
 				pitchTorqueScale = 0;
+			} else if (_internalState.hasFlipped) {
+				// Extra pitch lock after flip has finished
+				if (_internalState.flipTime < FLIP_TORQUE_TIME + FLIP_PITCHLOCK_EXTRA_TIME)
+					pitchTorqueScale = 0;
+			}	
 
 			// TODO: Use actual dot product operator functions (?)
 			torque = (controls.pitch * dirPitch_right * pitchTorqueScale * CAR_AIR_CONTROL_TORQUE.x) +
@@ -635,7 +632,7 @@ void Car::_UpdateAirControl(float tickTime, const MutatorConfig& mutatorConfig) 
 	}
 
 	if (controls.throttle != 0)
-		_rigidBody.m_linearVelocity += GetForwardDir() * controls.throttle * THROTTLE_AIR_FORCE * tickTime;
+		_rigidBody.applyCentralForce(GetForwardDir() * controls.throttle * THROTTLE_AIR_FORCE * CAR_MASS_BT);
 }
 
 void Car::_UpdateDoubleJumpOrFlip(float tickTime, const MutatorConfig& mutatorConfig, bool jumpPressed, float forwardSpeed_UU) {
@@ -644,7 +641,8 @@ void Car::_UpdateDoubleJumpOrFlip(float tickTime, const MutatorConfig& mutatorCo
 	if (_internalState.isOnGround) {
 		_internalState.hasDoubleJumped = false;
 		_internalState.hasFlipped = false;
-		_internalState.airTimeSinceJump = false;
+		_internalState.airTimeSinceJump = 0;
+		_internalState.flipTime = 0;
 	} else {
 		if (_internalState.hasJumped && !_internalState.isJumping) {
 			_internalState.airTimeSinceJump += tickTime;
@@ -653,9 +651,22 @@ void Car::_UpdateDoubleJumpOrFlip(float tickTime, const MutatorConfig& mutatorCo
 		}
 
 		if (jumpPressed && _internalState.airTimeSinceJump < DOUBLEJUMP_MAX_DELAY) {
-			if (!_internalState.hasDoubleJumped && !_internalState.hasFlipped && !_internalState.isAutoFlipping) {
-				float inputMagnitude = abs(controls.yaw) + abs(controls.pitch) + abs(controls.roll);
-				if (inputMagnitude >= config.dodgeDeadzone) {
+			float inputMagnitude = abs(controls.yaw) + abs(controls.pitch) + abs(controls.roll);
+			bool isFlipInput = inputMagnitude >= config.dodgeDeadzone;
+
+			bool canUse;
+
+			if (isFlipInput) {
+				canUse = (!_internalState.hasDoubleJumped && !_internalState.hasFlipped) || mutatorConfig.unlimitedFlips;
+			} else {
+				canUse = (!_internalState.hasDoubleJumped && !_internalState.hasFlipped) || mutatorConfig.unlimitedDoubleJumps;
+			}
+
+			if (_internalState.isAutoFlipping)
+				canUse = false;
+
+			if (canUse) {
+				if (isFlipInput) {
 					// Begin flipping
 					_internalState.flipTime = 0;
 					_internalState.hasFlipped = true;
@@ -712,14 +723,14 @@ void Car::_UpdateDoubleJumpOrFlip(float tickTime, const MutatorConfig& mutatorCo
 								0.f
 							};
 
-							_rigidBody.m_linearVelocity += finalDeltaVel * UU_TO_BT;
+							_rigidBody.applyCentralImpulse(finalDeltaVel * UU_TO_BT * CAR_MASS_BT);
 						}
 					}
 
 				} else {
 					// Double jump, add upwards velocity
-					btVector3 jumpStartForce = GetUpDir() * JUMP_IMMEDIATE_FORCE * UU_TO_BT;
-					_rigidBody.m_linearVelocity += jumpStartForce;
+					btVector3 jumpStartForce = GetUpDir() * JUMP_IMMEDIATE_FORCE * UU_TO_BT * CAR_MASS_BT;
+					_rigidBody.applyCentralImpulse(jumpStartForce);
 
 					_internalState.hasDoubleJumped = true;
 				}
@@ -727,14 +738,17 @@ void Car::_UpdateDoubleJumpOrFlip(float tickTime, const MutatorConfig& mutatorCo
 		}
 	}
 
-	if (_internalState.hasFlipped) {
-		// Replicated from https://github.com/samuelpmish/RLUtilities/blob/develop/src/mechanics/dodge.cc
+	if (_internalState.isFlipping) {
 		_internalState.flipTime += tickTime;
 		if (_internalState.flipTime <= FLIP_TORQUE_TIME) {
 			if (_internalState.flipTime >= FLIP_Z_DAMP_START && (_rigidBody.m_linearVelocity.z() < 0 || _internalState.flipTime < FLIP_Z_DAMP_END)) {
 				_rigidBody.m_linearVelocity.z() *= powf(1 - FLIP_Z_DAMP_120, tickTime / (1 / 120.f));
 			}
 		}
+	} else if (_internalState.hasFlipped) {
+		// Increment flip time even after we are done flipping
+		// We need to count the time after for FLIP_PITCHLOCK_EXTRA_TIME to work
+		_internalState.flipTime += tickTime;
 	}
 }
 
@@ -754,7 +768,7 @@ void Car::_UpdateAutoFlip(float tickTime, const MutatorConfig& mutatorConfig, bo
 		_internalState.autoFlipTorqueScale = (angles.roll > 0) ? 1 : -1;
 		_internalState.isAutoFlipping = true;
 
-		_rigidBody.m_linearVelocity += -GetUpDir() * CAR_AUTOFLIP_IMPULSE * UU_TO_BT;
+		_rigidBody.applyCentralImpulse(-GetUpDir() * CAR_AUTOFLIP_IMPULSE * UU_TO_BT * CAR_MASS_BT);
 	}
 
 	if (_internalState.isAutoFlipping) {
@@ -801,6 +815,6 @@ void Car::_UpdateAutoRoll(float tickTime, const MutatorConfig& mutatorConfig, in
 	Vec torqueRight = torqueDirRight * rightTorqueFactor;
 	Vec torqueForward = torqueDirForward * forwardTorqueFactor;
 
-	_rigidBody.m_linearVelocity += groundDownDir * RLConst::CAR_AUTOROLL_FORCE * UU_TO_BT * tickTime;
+	_rigidBody.applyCentralForce(groundDownDir * RLConst::CAR_AUTOROLL_FORCE * UU_TO_BT * CAR_MASS_BT);
 	_rigidBody.m_angularVelocity += (torqueForward + torqueRight) * RLConst::CAR_AUTOROLL_TORQUE * tickTime;
 }
