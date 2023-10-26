@@ -168,5 +168,5 @@ EMSCRIPTEN_BINDINGS(rocketsim)
         .value("HYBRID", CarConfigPreset::HYBRID)
         .value("MERC", CarConfigPreset::MERC);
 
-    constant("BALL_COLLISION_RADIUS_NORMAL", RLConst::BALL_COLLISION_RADIUS_NORMAL);
+    constant("BALL_COLLISION_RADIUS_SOCCAR", RLConst::BALL_COLLISION_RADIUS_SOCCAR);
 }
