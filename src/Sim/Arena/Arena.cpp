@@ -51,9 +51,6 @@ Car* Arena::AddCar(Team team, const CarConfig& config) {
 	car->_BulletSetup(gameMode, &_bulletWorld, _mutatorConfig);
 	car->Respawn(gameMode, -1, _mutatorConfig.carSpawnBoostAmount);
 
-	if (gameMode == GameMode::HOOPS)
-		car->_rigidBody.m_doubleIgnoreCollide = true;
-
 	return car;
 }
 
@@ -191,6 +188,8 @@ void Arena::ResetToRandomKickoff(int seed) {
 	} else if (gameMode == GameMode::SNOWDAY) {
 		// Don't freeze
 		ballState.vel.z = FLT_EPSILON;
+	} else if (isHoops) {
+		ballState.vel.z = BALL_HOOPS_Z_VEL;
 	}
 	ball->SetState(ballState);
 
@@ -417,10 +416,13 @@ Arena::Arena(GameMode gameMode, ArenaMemWeightMode memWeightMode, float tickRate
 
 		btDefaultCollisionConstructionInfo collisionConfigConstructionInfo = {};
 
+		// These take up a ton of memory normally
 		if (memWeightMode == ArenaMemWeightMode::LIGHT) {
-			// These take up a ton of memory normally
+			collisionConfigConstructionInfo.m_defaultMaxPersistentManifoldPoolSize /= 16;
+			collisionConfigConstructionInfo.m_defaultMaxCollisionAlgorithmPoolSize /= 32;
+		} else {
 			collisionConfigConstructionInfo.m_defaultMaxPersistentManifoldPoolSize /= 8;
-			collisionConfigConstructionInfo.m_defaultMaxCollisionAlgorithmPoolSize /= 8;
+			collisionConfigConstructionInfo.m_defaultMaxCollisionAlgorithmPoolSize /= 16;
 		}
 
 		_bulletWorldParams.collisionConfig.setup(collisionConfigConstructionInfo);
@@ -738,34 +740,9 @@ void Arena::Step(int ticksToSimulate) {
 
 		ball->_FinishPhysicsTick(_mutatorConfig);
 
-		if (hasArenaStuff) {
-			if (_goalScoreCallback.func != NULL) { // Potentially fire goal score callback
-
-				if (gameMode == GameMode::SOCCAR) {
-					float ballPosY = ball->_rigidBody.m_worldTransform.m_origin.y() * BT_TO_UU;
-					if (abs(ballPosY) > (RLConst::SOCCAR_GOAL_SCORE_BASE_THRESHOLD_Y + _mutatorConfig.ballRadius)) {
-						// Orange goal is at positive Y, so if the ball's Y is positive, it's in orange goal and thus blue scored
-						Team scoringTeam = (ballPosY > 0) ? Team::BLUE : Team::ORANGE;
-						_goalScoreCallback.func(this, scoringTeam, _goalScoreCallback.userInfo);
-					}
-				} else if (gameMode == GameMode::HOOPS) {
-
-					if (ball->_rigidBody.m_worldTransform.m_origin.z() < RLConst::HOOPS_GOAL_SCORE_THRESHOLD_Z * UU_TO_BT) {
-						constexpr float
-							SCALE_Y = 0.9f,
-							OFFSET_Y = 2770.f,
-							RADIUS_SQ = 716 * 716;
-
-						Vec ballPos = ball->_rigidBody.m_worldTransform.m_origin * BT_TO_UU;
-						float dx = ballPos.x;
-						float dy = abs(ballPos.y) * SCALE_Y - OFFSET_Y;
-						float distSq = dx * dx + dy * dy;
-						if (distSq < RADIUS_SQ) {
-							Team scoringTeam = (ballPos.y > 0) ? Team::BLUE : Team::ORANGE;
-							_goalScoreCallback.func(this, scoringTeam, _goalScoreCallback.userInfo);
-						}
-					}
-				}
+		if (_goalScoreCallback.func != NULL) { // Potentially fire goal score callback
+			if (IsBallScored()) {
+				_goalScoreCallback.func(this, RS_TEAM_FROM_Y(-ball->_rigidBody.m_worldTransform.m_origin.y()), _goalScoreCallback.userInfo);
 			}
 		}
 
@@ -773,46 +750,165 @@ void Arena::Step(int ticksToSimulate) {
 	}
 }
 
-bool Arena::IsBallProbablyGoingIn(float maxTime) const {
-	if (gameMode == GameMode::SOCCAR) {
-		Vec ballPos = ball->_rigidBody.m_worldTransform.m_origin * UU_TO_BT;
-		Vec ballVel = ball->_rigidBody.m_linearVelocity * UU_TO_BT;
+// Returns negative: within
+// Note that the returned margin is squared
+float BallWithinHoopsGoalXYMarginSq(float x, float y) {
+	constexpr float
+		SCALE_Y = 0.9f,
+		OFFSET_Y = 2770.f,
+		RADIUS_SQ = 716 * 716;
 
-		if (ballVel.y < FLT_EPSILON)
+	float dy = abs(y) * SCALE_Y - OFFSET_Y;
+	float distSq = x * x + dy * dy;
+	return distSq - RADIUS_SQ;
+}
+
+bool Arena::IsBallProbablyGoingIn(float maxTime, float extraMargin, Team* goalTeamOut) const {
+	Vec ballPos = ball->_rigidBody.m_worldTransform.m_origin * BT_TO_UU;
+	Vec ballVel = ball->_rigidBody.m_linearVelocity * BT_TO_UU;
+
+	if (gameMode == GameMode::SOCCAR || gameMode == GameMode::SNOWDAY) {
+		if (abs(ballVel.y) < FLT_EPSILON)
 			return false;
 
 		float scoreDirSgn = RS_SGN(ballVel.y);
-		float goalScoreY = (RLConst::SOCCAR_GOAL_SCORE_BASE_THRESHOLD_Y + _mutatorConfig.ballRadius) * scoreDirSgn;
-		float distToGoal = abs(ballPos.y - scoreDirSgn);
+		float goalY = RLConst::SOCCAR_GOAL_SCORE_BASE_THRESHOLD_Y * scoreDirSgn;
+		float distToGoal = abs(ballPos.y - goalY);
 
 		float timeToGoal = distToGoal / abs(ballVel.y);
-
+		
 		if (timeToGoal > maxTime)
 			return false;
-		
-		// Roughly account for drag
-		timeToGoal *= 1 + powf(1 - _mutatorConfig.ballDrag, timeToGoal);
 
 		Vec extrapPosWhenScore = ballPos + (ballVel * timeToGoal) + (_mutatorConfig.gravity * timeToGoal * timeToGoal) / 2;
-		
+
 		// From: https://github.com/RLBot/RLBot/wiki/Useful-Game-Values
 		constexpr float
 			APPROX_GOAL_HALF_WIDTH = 892.755f,
 			APPROX_GOAL_HEIGHT = 642.775;
 
-		float SCORE_MARGIN = _mutatorConfig.ballRadius * 0.64f;
+		float scoreMargin = _mutatorConfig.ballRadius * 0.1f + extraMargin;
 
-		if (extrapPosWhenScore.z > APPROX_GOAL_HEIGHT + SCORE_MARGIN)
+		if (extrapPosWhenScore.z > APPROX_GOAL_HEIGHT + scoreMargin)
 			return false; // Too high
 
-		if (abs(extrapPosWhenScore.x) > APPROX_GOAL_HALF_WIDTH + SCORE_MARGIN)
+		if (abs(extrapPosWhenScore.x) > APPROX_GOAL_HALF_WIDTH + scoreMargin)
 			return false; // Too far to the side
+
+		if (goalTeamOut)
+			*goalTeamOut = RS_TEAM_FROM_Y(scoreDirSgn);
 
 		// Ok it's probably gonna score, or at least be very close
 		return true;
+	} else if (gameMode == GameMode::HOOPS) {
+
+		constexpr float
+			APPROX_RIM_HEIGHT = 365;
+		
+		float minHeight = APPROX_RIM_HEIGHT + _mutatorConfig.ballRadius * 1.2f;
+
+		if (ballVel.z < -FLT_EPSILON && ballPos.z < minHeight) {
+			if (BallWithinHoopsGoalXYMarginSq(ballPos.x, ballPos.y) < 0) {
+				if (goalTeamOut)
+					*goalTeamOut = RS_TEAM_FROM_Y(ballPos.y);
+				return true; // Already in the net
+			}
+		}
+
+		float margin = _mutatorConfig.ballRadius * 1.0f;
+		float marginSq = margin * margin;
+
+		float upQuadIntercept;
+		float downQuadIntercept;
+
+		// Calculate time to score using quadratic intercept
+		{
+			float g = _mutatorConfig.gravity.z;
+			if (g > -FLT_EPSILON)
+				return false; 
+
+			float v = ballVel.z;
+			float h = ballPos.z - minHeight;
+
+			float sqrtInput = v * v - 2 * g * h;
+			if (sqrtInput > 0) {
+				float sqrtOutput = sqrtf(sqrtInput);
+				upQuadIntercept = (-v + sqrtOutput) / g;
+				downQuadIntercept = (-v - sqrtOutput) / g;
+			} else {
+				// Never reaches the rim height
+				if (BallWithinHoopsGoalXYMarginSq(ballPos.x, ballPos.y) < -marginSq) {
+					// If started within the hoop, it will stay within the hoop and is therefore scoring
+					return true;
+				} else {
+					// Otherwise, it can never get into the hoop and is therefore never scoring
+					return false;
+				}
+			}
+		}
+		
+		if (upQuadIntercept >= 0) {
+			// Ball has to go up before it can fall into the hoop
+			// Make sure it cant hit the rim on the way up
+
+			Vec extrapPosUp = ballPos + (ballVel * upQuadIntercept);
+			float upMarginSq = BallWithinHoopsGoalXYMarginSq(extrapPosUp.x, extrapPosUp.y);
+
+			float minClearanceMargin = 60 + _mutatorConfig.ballRadius;
+
+			if (upMarginSq > -marginSq && upMarginSq < (minClearanceMargin * minClearanceMargin))
+				return false; // Will probably hit rim
+		}
+
+		Vec extrapPosDown = ballPos + (ballVel * downQuadIntercept);
+		extrapPosDown.y = abs(extrapPosDown.y);
+
+		{ // Very approximate prediction of backboard bounce
+			float wallBounceY = RLConst::ARENA_EXTENT_Y_HOOPS - _mutatorConfig.ballRadius;
+			if (extrapPosDown.y > wallBounceY) {
+				float margin = extrapPosDown.y - wallBounceY;
+				extrapPosDown.y -= margin * (1 + _mutatorConfig.ballWorldRestitution);
+			}
+		}
+		
+		if (BallWithinHoopsGoalXYMarginSq(extrapPosDown.x, extrapPosDown.y) < -marginSq) {
+			if (goalTeamOut)
+				*goalTeamOut = RS_TEAM_FROM_Y(extrapPosDown.y);
+			return true;
+		} else {
+			return false;
+		}
+
 	} else {
-		// TODO: Support for hoops
-		RS_ERR_CLOSE("Arena::IsBallProbablyGoingIn() not supported in non-soccar gamemode");
+		RS_ERR_CLOSE("Arena::IsBallProbablyGoingIn() is not supported for: " << GAMEMODE_STRS[(int)gameMode]);
+		return false;
+	}
+}
+
+RSAPI bool Arena::IsBallScored() const {
+	switch (gameMode) {
+	case GameMode::SOCCAR:
+	case GameMode::HEATSEEKER:
+	case GameMode::SNOWDAY:
+	{
+		float ballPosY = ball->_rigidBody.m_worldTransform.m_origin.y() * BT_TO_UU;
+		return abs(ballPosY) > (RLConst::SOCCAR_GOAL_SCORE_BASE_THRESHOLD_Y + _mutatorConfig.ballRadius);
+	}
+	case GameMode::HOOPS:
+	{
+		if (ball->_rigidBody.m_worldTransform.m_origin.z() < RLConst::HOOPS_GOAL_SCORE_THRESHOLD_Z * UU_TO_BT) {
+			constexpr float
+				SCALE_Y = 0.9f,
+				OFFSET_Y = 2770.f,
+				RADIUS_SQ = 716 * 716;
+
+			Vec ballPos = ball->_rigidBody.m_worldTransform.m_origin * BT_TO_UU;
+			return BallWithinHoopsGoalXYMarginSq(ballPos.x, ballPos.y) < 0;
+		} else {
+			return false;
+		}
+	}
+	default:
 		return false;
 	}
 }
@@ -891,7 +987,7 @@ void Arena::_SetupArenaCollisionShapes() {
 			}
 		}
 
-		_AddStaticCollisionShape(i, i, mesh, _worldCollisionBvhShapes, btVector3(0,0,0), isHoopsNet, isHoopsNet);
+		_AddStaticCollisionShape(i, i, mesh, _worldCollisionBvhShapes, btVector3(0,0,0), isHoopsNet);
 
 		// Don't free the BVH when we deconstruct this arena
 		_worldCollisionBvhShapes[i].m_ownsBvh = false;

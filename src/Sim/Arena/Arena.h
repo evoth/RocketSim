@@ -3,6 +3,7 @@
 #include "../Car/Car.h"
 #include "../Ball/Ball.h"
 #include "../BoostPad/BoostPad.h"
+#include "../CollisionMasks.h"
 
 #include "../../CollisionMeshFile/CollisionMeshFile.h"
 #include "../BoostPad/BoostPadGrid/BoostPadGrid.h"
@@ -139,7 +140,12 @@ public:
 	// Returns true if the ball is probably going in, does not account for wall or ceiling bounces
 	// NOTE: Purposefully overestimates, just like the real RL's shot prediction
 	// To check which goal it will score in, use the ball's velocity
-	RSAPI bool IsBallProbablyGoingIn(float maxTime = 2.f) const;
+	// Margin can be manually adjusted with extraMargin (negative to prevent overestimating)
+	RSAPI bool IsBallProbablyGoingIn(float maxTime = 2.f, float extraMargin = 0, Team* goalTeamOut = NULL) const;
+
+	// Returns true if the ball is in the net
+	// Works for all gamemodes (and does nothing in THE_VOID)
+	RSAPI bool IsBallScored() const;
 
 	// Free all associated memory
 	RSAPI ~Arena();
@@ -148,7 +154,7 @@ public:
 	template <class T>
 	void _AddStaticCollisionShape(
 		size_t rbIndex, size_t meshListIndex, T* shape, T* meshList, btVector3 posBT = btVector3(0, 0, 0), 
-		bool doubleIgnoreCollide = false, bool noRayCollisions = false) {
+		bool isHoopsNet = false) {
 
 		static_assert(std::is_base_of<btCollisionShape, T>::value);
 		meshList[meshListIndex] = *shape;
@@ -158,9 +164,11 @@ public:
 		shapeRB = btRigidBody(0, NULL, &meshList[meshListIndex]);
 		shapeRB.setWorldTransform(btTransform(btMatrix3x3::getIdentity(), posBT));
 		shapeRB.setUserPointer(this);
-		shapeRB.m_doubleIgnoreCollide = doubleIgnoreCollide;
-		shapeRB.m_noRayCollisions = noRayCollisions;
-		_bulletWorld.addRigidBody(&shapeRB);
+		if (isHoopsNet) {
+			_bulletWorld.addRigidBody(&shapeRB, CollisionMasks::HOOPS_NET, CollisionMasks::HOOPS_NET);
+		} else {
+			_bulletWorld.addRigidBody(&shapeRB);
+		}
 	}
 
 	void _SetupArenaCollisionShapes();

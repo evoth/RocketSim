@@ -5,6 +5,7 @@
 
 #include "../../../libsrc/bullet3-3.24/BulletDynamics/Dynamics/btDynamicsWorld.h"
 #include "../../../libsrc/bullet3-3.24/BulletCollision/CollisionShapes/btConvexHullShape.h"
+#include "../CollisionMasks.h"
 
 bool BallState::Matches(const BallState& other, float marginPos, float marginVel, float marginAngVel) const {
 	return
@@ -42,6 +43,7 @@ void Ball::SetState(const BallState& state) {
 	_rigidBody.setAngularVelocity(state.angVel);
 
 	_velocityImpulseCache = { 0,0,0 };
+	_internalState.updateCounter = 0;
 }
 
 btCollisionShape* MakeBallCollisionShape(GameMode gameMode, const MutatorConfig& mutatorConfig, btVector3& localIntertia) {
@@ -100,7 +102,7 @@ void Ball::_BulletSetup(GameMode gameMode, btDynamicsWorld* bulletWorld, const M
 
 	_rigidBody.m_rigidbodyFlags = 0;
 
-	bulletWorld->addRigidBody(&_rigidBody);
+	bulletWorld->addRigidBody(&_rigidBody, btBroadphaseProxy::DefaultFilter | CollisionMasks::HOOPS_NET, btBroadphaseProxy::AllFilter);
 }
 
 void Ball::_FinishPhysicsTick(const MutatorConfig& mutatorConfig) {
@@ -138,6 +140,8 @@ void Ball::_FinishPhysicsTick(const MutatorConfig& mutatorConfig) {
 		_rigidBody.m_angularVelocity =
 			Math::RoundVec(_rigidBody.m_angularVelocity, 0.00001);
 	}
+
+	_internalState.updateCounter++;
 }
 
 bool Ball::IsSphere() const {

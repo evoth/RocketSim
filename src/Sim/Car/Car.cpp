@@ -35,6 +35,7 @@ void Car::SetState(const CarState& state) {
 	_velocityImpulseCache = { 0, 0, 0 };
 
 	_internalState = state;
+	_internalState.updateCounter = 0;
 }
 
 void Car::Demolish(float respawnDelay) {
@@ -106,9 +107,9 @@ void Car::_PreTickUpdate(GameMode gameMode, float tickTime, const MutatorConfig&
 	float forwardSpeed_UU = _bulletVehicle.getForwardSpeed() * BT_TO_UU;
 	_UpdateWheels(tickTime, mutatorConfig, numWheelsInContact, forwardSpeed_UU);
 
-	if (numWheelsInContact == 0) {
-		_UpdateAirControl(tickTime, mutatorConfig);
-	} else if (numWheelsInContact >= 3) {
+	if (numWheelsInContact < 3) {
+		_UpdateAirTorque(tickTime, mutatorConfig, numWheelsInContact == 0);
+	} else {
 		_internalState.isFlipping = false;
 	}
 
@@ -205,6 +206,8 @@ void Car::_FinishPhysicsTick(const MutatorConfig& mutatorConfig) {
 		_rigidBody.m_angularVelocity =
 			Math::RoundVec(_rigidBody.m_angularVelocity, 0.00001);
 	}
+
+	_internalState.updateCounter++;
 }
 
 void Car::_BulletSetup(GameMode gameMode, btDynamicsWorld* bulletWorld, const MutatorConfig& mutatorConfig) {
@@ -238,9 +241,6 @@ void Car::_BulletSetup(GameMode gameMode, btDynamicsWorld* bulletWorld, const Mu
 
 	// Disable gyroscopic force
 	_rigidBody.m_rigidbodyFlags = 0;
-
-	if (gameMode == GameMode::HOOPS)
-		_rigidBody.m_doubleIgnoreCollide = true;
 
 	// Add rigidbody to world
 	bulletWorld->addRigidBody(&_rigidBody);
@@ -553,7 +553,7 @@ void Car::_UpdateJump(float tickTime, const MutatorConfig& mutatorConfig, bool j
 	}
 }
 
-void Car::_UpdateAirControl(float tickTime, const MutatorConfig& mutatorConfig) {
+void Car::_UpdateAirTorque(float tickTime, const MutatorConfig& mutatorConfig, bool updateAirControl) {
 	using namespace RLConst;
 
 	btVector3
@@ -582,7 +582,7 @@ void Car::_UpdateAirControl(float tickTime, const MutatorConfig& mutatorConfig) 
 			relDodgeTorque.y() *= pitchScale;
 
 			btVector3 dodgeTorque = relDodgeTorque * btVector3(FLIP_TORQUE_X, FLIP_TORQUE_Y, 0);
-			_rigidBody.m_angularVelocity += _rigidBody.m_worldTransform.m_basis * dodgeTorque * tickTime;
+			_rigidBody.applyTorque(_rigidBody.m_invInertiaTensorWorld.inverse() * _rigidBody.m_worldTransform.m_basis * dodgeTorque);
 		} else {
 			// Stall, allow air control
 			doAirControl = true;
@@ -592,11 +592,12 @@ void Car::_UpdateAirControl(float tickTime, const MutatorConfig& mutatorConfig) 
 	}
 
 	doAirControl &= !_internalState.isAutoFlipping;
+	doAirControl &= updateAirControl;
 	if (doAirControl) {
-		// Net torque to apply to the car
-		btVector3 torque;
 
 		float pitchTorqueScale = 1;
+
+		btVector3 torque;
 		if (controls.pitch || controls.yaw || controls.roll) {
 
 			if (_internalState.isFlipping) {
@@ -605,7 +606,7 @@ void Car::_UpdateAirControl(float tickTime, const MutatorConfig& mutatorConfig) 
 				// Extra pitch lock after flip has finished
 				if (_internalState.flipTime < FLIP_TORQUE_TIME + FLIP_PITCHLOCK_EXTRA_TIME)
 					pitchTorqueScale = 0;
-			}	
+			}
 
 			// TODO: Use actual dot product operator functions (?)
 			torque = (controls.pitch * dirPitch_right * pitchTorqueScale * CAR_AIR_CONTROL_TORQUE.x) +
@@ -627,8 +628,7 @@ void Car::_UpdateAirControl(float tickTime, const MutatorConfig& mutatorConfig) 
 			(dirYaw_up * dampYaw) +
 			(dirPitch_right * dampPitch) +
 			(dirRoll_forward * dampRoll);
-
-		_rigidBody.m_angularVelocity += (torque - damping) * CAR_TORQUE_SCALE * tickTime;
+		_rigidBody.applyTorque(_rigidBody.m_invInertiaTensorWorld.inverse() * (torque - damping) * CAR_TORQUE_SCALE);
 	}
 
 	if (controls.throttle != 0)
@@ -763,12 +763,17 @@ void Car::_UpdateAutoFlip(float tickTime, const MutatorConfig& mutatorConfig, bo
 		_internalState.worldContact.contactNormal.z > CAR_AUTOFLIP_NORMZ_THRESH
 		) {
 
+		// TODO: Slow :(
 		Angle angles = Angle::FromRotMat(_internalState.rotMat);
-		_internalState.autoFlipTimer = CAR_AUTOFLIP_TIME * (abs(angles.roll) / M_PI);
-		_internalState.autoFlipTorqueScale = (angles.roll > 0) ? 1 : -1;
-		_internalState.isAutoFlipping = true;
 
-		_rigidBody.applyCentralImpulse(-GetUpDir() * CAR_AUTOFLIP_IMPULSE * UU_TO_BT * CAR_MASS_BT);
+		float absRoll = abs(angles.roll);
+		if (absRoll > CAR_AUTOFLIP_ROLL_THRESH) {
+			_internalState.autoFlipTimer = CAR_AUTOFLIP_TIME * (absRoll / M_PI);
+			_internalState.autoFlipTorqueScale = (angles.roll > 0) ? 1 : -1;
+			_internalState.isAutoFlipping = true;
+
+			_rigidBody.applyCentralImpulse(-GetUpDir() * CAR_AUTOFLIP_IMPULSE * UU_TO_BT * CAR_MASS_BT);
+		}
 	}
 
 	if (_internalState.isAutoFlipping) {
@@ -816,5 +821,5 @@ void Car::_UpdateAutoRoll(float tickTime, const MutatorConfig& mutatorConfig, in
 	Vec torqueForward = torqueDirForward * forwardTorqueFactor;
 
 	_rigidBody.applyCentralForce(groundDownDir * RLConst::CAR_AUTOROLL_FORCE * UU_TO_BT * CAR_MASS_BT);
-	_rigidBody.m_angularVelocity += (torqueForward + torqueRight) * RLConst::CAR_AUTOROLL_TORQUE * tickTime;
+	_rigidBody.applyTorque(_rigidBody.m_invInertiaTensorWorld.inverse() * (torqueForward + torqueRight) * RLConst::CAR_AUTOROLL_TORQUE);
 }
